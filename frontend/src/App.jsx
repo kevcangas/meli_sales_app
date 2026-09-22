@@ -5,6 +5,7 @@ import FilterControls from './components/FilterControls';
 import ProductGrid from './components/ProductGrid';
 import AnalyticsView from './components/AnalyticsView';
 import PriceHistoryModal from './components/PriceHistoryModal';
+import { apiUrl } from './api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('radar'); // 'radar' o 'analytics'
@@ -26,7 +27,7 @@ export default function App() {
 
   // Cargar categorías disponibles
   useEffect(() => {
-    fetch('/api/v1/categories')
+    fetch(apiUrl('/api/v1/categories'))
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -41,7 +42,7 @@ export default function App() {
     setIsLoading(true);
     try {
       const catParam = category !== 'all' ? `?category_id=${category}` : '';
-      const res = await fetch(`/api/v1/comparison${catParam}`);
+      const res = await fetch(apiUrl(`/api/v1/comparison${catParam}`));
       if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
       const data = await res.json();
       setComparisonData(data);
@@ -62,7 +63,7 @@ export default function App() {
     setStatusMessage('Iniciando extracción en tiempo real...');
     try {
       const catParam = selectedCategory !== 'all' ? `?category_id=${selectedCategory}` : '';
-      const res = await fetch(`/api/v1/sync${catParam}`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/v1/sync${catParam}`), { method: 'POST' });
       const result = await res.json();
 
       if (res.ok) {

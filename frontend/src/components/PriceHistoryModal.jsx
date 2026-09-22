@@ -10,6 +10,7 @@ import {
   Calendar, 
   AlertCircle 
 } from 'lucide-react';
+import { apiUrl } from '../api';
 
 export default function PriceHistoryModal({ itemId, onClose }) {
   const [data, setData] = useState(null);
@@ -22,7 +23,7 @@ export default function PriceHistoryModal({ itemId, onClose }) {
     setIsLoading(true);
     setError(null);
 
-    fetch(`/api/v1/products/${encodeURIComponent(itemId)}/history`)
+    fetch(apiUrl(`/api/v1/products/${encodeURIComponent(itemId)}/history`))
       .then((res) => {
         if (!res.ok) throw new Error('No se pudo cargar el historial');
         return res.json();

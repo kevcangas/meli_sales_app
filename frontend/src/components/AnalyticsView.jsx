@@ -12,6 +12,7 @@ import {
   Trophy,
   ArrowRight
 } from 'lucide-react';
+import { apiUrl } from '../api';
 
 export default function AnalyticsView({ categories, currentCategory, onCategoryChange }) {
   const [data, setData] = useState(null);
@@ -20,7 +21,7 @@ export default function AnalyticsView({ categories, currentCategory, onCategoryC
   useEffect(() => {
     setIsLoading(true);
     const catParam = currentCategory !== 'all' ? `?category_id=${currentCategory}` : '';
-    fetch(`/api/v1/analytics${catParam}`)
+    fetch(apiUrl(`/api/v1/analytics${catParam}`))
       .then((res) => {
         if (!res.ok) throw new Error('Error al consultar métricas');
         return res.json();

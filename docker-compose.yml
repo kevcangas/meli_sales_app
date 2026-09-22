@@ -1,0 +1,68 @@
+services:
+  # 1. Backend FastAPI: Servidor REST para la API de consultas y cruces
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: meli_backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8001}:8000"
+    environment:
+      - DATABASE_URL=sqlite:////data/meli.db
+      - SITE_DOMAIN=${SITE_DOMAIN:-www.mercadolibre.com.mx}
+      - SCRAPE_INTERVAL_HOURS=${SCRAPE_INTERVAL_HOURS:-6}
+      - CORS_ORIGINS=*
+      - LOG_LEVEL=INFO
+    volumes:
+      - meli_data:/data
+    networks:
+      - meli_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # 2. Worker Service: Ejecuta la extracción periódica cada N horas
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: meli_worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      - DATABASE_URL=sqlite:////data/meli.db
+      - SITE_DOMAIN=${SITE_DOMAIN:-www.mercadolibre.com.mx}
+      - SCRAPE_INTERVAL_HOURS=${SCRAPE_INTERVAL_HOURS:-6}
+      - LOG_LEVEL=INFO
+    volumes:
+      - meli_data:/data
+    depends_on:
+      - backend
+    networks:
+      - meli_net
+
+  # 3. Frontend SPA: Dashboard analítico en React + Vite servido con Nginx
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: meli_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3001}:80"
+    depends_on:
+      - backend
+    networks:
+      - meli_net
+
+volumes:
+  meli_data:
+    name: meli_data
+
+networks:
+  meli_net:
+    driver: bridge

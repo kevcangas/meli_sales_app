@@ -1,4 +1,4 @@
-app_name: meli_sales_app
+app_name: meli_sales
 services:
   - name: backend
     port: 8000

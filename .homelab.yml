@@ -2,12 +2,13 @@ app_name: meli_sales_app
 services:
   - name: backend
     port: 8000
-    subdomain: api_meli_sales
+    subdomain: api-meli-sales
     homepage: false
+    container: meli_backend
   - name: frontend
     port: 80
-    subdomain: meli_sales
+    subdomain: meli-sales
     homepage: true
     description: "Meli Sales App"
     icon: mdi-chart-line
-    
+    container: meli_frontend

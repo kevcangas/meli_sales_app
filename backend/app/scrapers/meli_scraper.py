@@ -74,15 +74,23 @@ class MercadoLibreScraper:
 
         logger.info("Extrayendo Más Vendidos desde: %s", url)
 
-        try:
-            async with AsyncSession(impersonate="chrome120") as session:
-                response = await session.get(url, headers=self.headers, timeout=20)
-                if response.status_code != 200:
-                    logger.error("Error status code %s al consultar %s", response.status_code, url)
-                    return []
-                html_content = response.text
-        except Exception as exc:
-            logger.error("Excepción en request get_best_sellers: %s", exc)
+        html_content = None
+        for attempt in range(1, 4):
+            try:
+                async with AsyncSession(impersonate="chrome120") as session:
+                    response = await session.get(url, headers=self.headers, timeout=25)
+                    if response.status_code == 200:
+                        html_content = response.text
+                        break
+                    logger.warning("Intento %d/3: Status %s al consultar %s", attempt, response.status_code, url)
+            except Exception as exc:
+                logger.warning("Intento %d/3 falló al consultar %s: %s", attempt, url, exc)
+
+            if attempt < 3:
+                await asyncio.sleep(attempt * 3)
+
+        if not html_content:
+            logger.error("Agotados los reintentos para %s", url)
             return []
 
         parser = HTMLParser(html_content)
@@ -191,15 +199,23 @@ class MercadoLibreScraper:
 
             logger.info("Extrayendo Ofertas página %d desde: %s", page, url)
 
-            try:
-                async with AsyncSession(impersonate="chrome120") as session:
-                    response = await session.get(url, headers=self.headers, timeout=20)
-                    if response.status_code != 200:
-                        logger.error("Error status code %s en página %d de ofertas", response.status_code, page)
-                        break
-                    html_content = response.text
-            except Exception as exc:
-                logger.error("Excepción al consultar ofertas en página %d: %s", page, exc)
+            html_content = None
+            for attempt in range(1, 4):
+                try:
+                    async with AsyncSession(impersonate="chrome120") as session:
+                        response = await session.get(url, headers=self.headers, timeout=25)
+                        if response.status_code == 200:
+                            html_content = response.text
+                            break
+                        logger.warning("Intento %d/3: Status %s en página %d de ofertas", attempt, response.status_code, page)
+                except Exception as exc:
+                    logger.warning("Intento %d/3 falló en ofertas página %d: %s", attempt, page, exc)
+
+                if attempt < 3:
+                    await asyncio.sleep(attempt * 3)
+
+            if not html_content:
+                logger.error("Agotados los reintentos para página %d de ofertas (%s)", page, url)
                 break
 
             parser = HTMLParser(html_content)

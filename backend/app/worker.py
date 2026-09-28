@@ -2,7 +2,7 @@ import time
 import logging
 import asyncio
 import signal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
@@ -33,6 +33,9 @@ async def execute_scheduled_scrape():
 
         best_sellers, deals = await asyncio.gather(best_sellers_task, deals_task)
 
+        if not best_sellers and not deals:
+            raise RuntimeError("No se pudieron extraer Más Vendidos ni Ofertas (posible fallo de red/DNS o bloqueo).")
+
         comparison = compare_best_sellers_and_deals(best_sellers, deals)
         elapsed = time.time() - start_time
 
@@ -57,7 +60,7 @@ async def main():
     logger.info("Iniciando servicio Scraper Worker (Intervalo: cada %d horas)", settings.SCRAPE_INTERVAL_HOURS)
     init_db()
 
-    # Breve espera inicial para asegurar que el backend y la BD estén listos
+    # Breve espera inicial para asegurar que la red y la BD estén listas
     await asyncio.sleep(5)
 
     # Ejecutar primera extracción inmediatamente si se desea
@@ -65,15 +68,16 @@ async def main():
     await execute_scheduled_scrape()
 
     scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    next_run = datetime.now(timezone.utc) + timedelta(hours=settings.SCRAPE_INTERVAL_HOURS)
     scheduler.add_job(
         execute_scheduled_scrape,
         "interval",
         hours=settings.SCRAPE_INTERVAL_HOURS,
-        next_run_time=None,  # El siguiente se programa para dentro de N horas
+        next_run_time=next_run,
         id="meli_periodic_scrape"
     )
     scheduler.start()
-    logger.info("Scheduler de fondo activo y programado.")
+    logger.info("Scheduler de fondo activo y programado. Próxima ejecución: %s", next_run.strftime("%Y-%m-%d %H:%M:%S UTC"))
 
     stop_event = asyncio.Event()
 

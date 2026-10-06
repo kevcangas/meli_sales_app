@@ -1,6 +1,6 @@
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.models import SyncLog, ProductRecord
@@ -158,8 +158,8 @@ def get_sync_status(db: Session) -> Dict[str, Any]:
     }
 
 
-def get_product_price_history(db: Session, item_id: str) -> Optional[ProductPriceHistoryResponse]:
-    """Obtiene la serie temporal de precios observados para un producto específico."""
+def get_product_price_history(db: Session, item_id: str, days: Optional[int] = None) -> Optional[ProductPriceHistoryResponse]:
+    """Obtiene la serie temporal de precios observados para un producto específico, opcionalmente filtrada por los últimos N días."""
     clean_id = item_id.strip()
     records = (
         db.query(ProductRecord, SyncLog)
@@ -181,10 +181,28 @@ def get_product_price_history(db: Session, item_id: str) -> Optional[ProductPric
 
     ordered_points = sorted(seen_syncs.values(), key=lambda x: x[1])
 
+    latest_record = ordered_points[-1][0]
+    all_prices = [p.current_price for p, _ in ordered_points]
+
+    # Filtrar por días si se especifica
+    if days is not None and days > 0:
+        now_ts = datetime.now(timezone.utc)
+        last_rec_date = ordered_points[-1][1]
+        if last_rec_date.tzinfo is None:
+            now_ts = now_ts.replace(tzinfo=None)
+        cutoff_date = now_ts - timedelta(days=days)
+        
+        filtered_points = [
+            (p, rec_date) for p, rec_date in ordered_points
+            if (rec_date.replace(tzinfo=None) if rec_date.tzinfo else rec_date) >= (cutoff_date.replace(tzinfo=None) if cutoff_date.tzinfo else cutoff_date)
+        ]
+    else:
+        filtered_points = ordered_points
+
     history_points: List[PriceHistoryPoint] = []
     prices: List[float] = []
 
-    for p, rec_date in ordered_points:
+    for p, rec_date in filtered_points:
         prices.append(p.current_price)
         history_points.append(
             PriceHistoryPoint(
@@ -199,13 +217,13 @@ def get_product_price_history(db: Session, item_id: str) -> Optional[ProductPric
             )
         )
 
-    latest_record = ordered_points[-1][0]
-    min_p = min(prices) if prices else 0.0
-    max_p = max(prices) if prices else 0.0
-    sorted_p = sorted(prices)
+    active_prices = prices if prices else all_prices
+    min_p = min(active_prices) if active_prices else 0.0
+    max_p = max(active_prices) if active_prices else 0.0
+    sorted_p = sorted(active_prices)
     med_p = sorted_p[len(sorted_p) // 2] if sorted_p else 0.0
-    first_p = prices[0] if prices else 0.0
-    last_p = prices[-1] if prices else 0.0
+    first_p = active_prices[0] if active_prices else 0.0
+    last_p = active_prices[-1] if active_prices else latest_record.current_price
     change_amt = round(last_p - first_p, 2)
     change_pct = round(((last_p - first_p) / first_p) * 100, 1) if first_p > 0 else 0.0
 

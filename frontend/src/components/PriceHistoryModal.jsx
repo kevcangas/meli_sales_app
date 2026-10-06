@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, 
   TrendingUp, 
@@ -6,16 +6,24 @@ import {
   Minus, 
   ExternalLink, 
   Clock, 
-  DollarSign, 
   Calendar, 
   AlertCircle 
 } from 'lucide-react';
 import { apiUrl } from '../api';
 
+const TIME_FILTERS = [
+  { id: 'all', label: 'Todo' },
+  { id: '24h', label: '24h' },
+  { id: '7d', label: '7D' },
+  { id: '30d', label: '30D' },
+  { id: '90d', label: '90D' },
+];
+
 export default function PriceHistoryModal({ itemId, onClose }) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedFilter, setSelectedFilter] = useState('all');
   const [activePointIndex, setActivePointIndex] = useState(null);
 
   useEffect(() => {
@@ -37,6 +45,79 @@ export default function PriceHistoryModal({ itemId, onClose }) {
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false));
   }, [itemId]);
+
+  // Filtrado temporal dinámico
+  const filteredHistory = useMemo(() => {
+    if (!data?.history || data.history.length === 0) return [];
+    if (selectedFilter === 'all') return data.history;
+
+    const timestamps = data.history
+      .map((h) => new Date(h.recorded_at).getTime())
+      .filter((t) => !isNaN(t));
+
+    if (timestamps.length === 0) return data.history;
+
+    const latestTimestamp = Math.max(...timestamps);
+    // Si la última observación ocurrió en los últimos 7 días con respecto a la fecha actual,
+    // calculamos la ventana contra Date.now(); de lo contrario anclamos contra el último timestamp observado.
+    const baseTime = (Date.now() - latestTimestamp < 7 * 24 * 60 * 60 * 1000)
+      ? Date.now()
+      : latestTimestamp;
+
+    let durationMs = 0;
+    if (selectedFilter === '24h') durationMs = 24 * 60 * 60 * 1000;
+    else if (selectedFilter === '7d') durationMs = 7 * 24 * 60 * 60 * 1000;
+    else if (selectedFilter === '30d') durationMs = 30 * 24 * 60 * 60 * 1000;
+    else if (selectedFilter === '90d') durationMs = 90 * 24 * 60 * 60 * 1000;
+
+    const cutoff = baseTime - durationMs;
+    return data.history.filter((h) => new Date(h.recorded_at).getTime() >= cutoff);
+  }, [data, selectedFilter]);
+
+  // Ajustar punto activo cuando cambia el filtro
+  useEffect(() => {
+    if (filteredHistory.length > 0) {
+      if (activePointIndex === null || activePointIndex >= filteredHistory.length) {
+        setActivePointIndex(filteredHistory.length - 1);
+      }
+    } else {
+      setActivePointIndex(null);
+    }
+  }, [filteredHistory]);
+
+  // Estadísticas reactivas al filtro de tiempo
+  const stats = useMemo(() => {
+    if (!data) return null;
+    if (filteredHistory.length === 0) {
+      return {
+        currentPrice: data.current_price,
+        minPrice: data.min_recorded_price,
+        maxPrice: data.max_recorded_price,
+        trend: data.trend,
+        priceChangePct: data.price_change_percentage,
+        count: 0,
+      };
+    }
+
+    const prices = filteredHistory.map((h) => h.current_price);
+    const minP = Math.min(...prices);
+    const maxP = Math.max(...prices);
+    const firstP = prices[0];
+    const lastP = prices[prices.length - 1];
+    const changePct = firstP > 0 ? Math.round(((lastP - firstP) / firstP) * 1000) / 10 : 0;
+    let trend = 'stable';
+    if (changePct <= -2.0) trend = 'downward';
+    else if (changePct >= 2.0) trend = 'upward';
+
+    return {
+      currentPrice: lastP,
+      minPrice: minP,
+      maxPrice: maxP,
+      trend,
+      priceChangePct: changePct,
+      count: filteredHistory.length,
+    };
+  }, [data, filteredHistory]);
 
   const formatMoney = (amount) => {
     if (amount === undefined || amount === null) return '$0';
@@ -64,9 +145,28 @@ export default function PriceHistoryModal({ itemId, onClose }) {
 
   // Render SVG Chart
   const renderChart = () => {
-    if (!data || !data.history || data.history.length === 0) return null;
-    const history = data.history;
+    if (!data || !data.history) return null;
 
+    if (filteredHistory.length === 0) {
+      const activeLabel = TIME_FILTERS.find((f) => f.id === selectedFilter)?.label || selectedFilter;
+      return (
+        <div className="chart-empty-state">
+          <AlertCircle size={28} className="empty-icon" />
+          <p className="empty-text">
+            No se registraron observaciones de precio para la ventana <strong>{activeLabel}</strong>.
+          </p>
+          <button
+            type="button"
+            className="empty-reset-btn"
+            onClick={() => setSelectedFilter('all')}
+          >
+            Ver todo el histórico ({data.history.length} registros)
+          </button>
+        </div>
+      );
+    }
+
+    const history = filteredHistory;
     const width = 560;
     const height = 180;
     const padX = 45;
@@ -102,7 +202,9 @@ export default function PriceHistoryModal({ itemId, onClose }) {
 
     const areaD = `${pathD} L ${points[points.length - 1].x} ${height - padY} L ${points[0].x} ${height - padY} Z`;
 
-    const activePoint = activePointIndex !== null ? points[activePointIndex] : null;
+    const activePoint = (activePointIndex !== null && points[activePointIndex])
+      ? points[activePointIndex]
+      : points[points.length - 1];
 
     return (
       <div style={{ position: 'relative', marginTop: '16px' }}>
@@ -177,6 +279,8 @@ export default function PriceHistoryModal({ itemId, onClose }) {
           {/* Puntos interactivos */}
           {points.map((p, idx) => {
             const isHovered = activePointIndex === idx;
+            const showLabel = history.length <= 8 || idx === 0 || idx === history.length - 1 || idx % Math.ceil(history.length / 5) === 0 || isHovered;
+
             return (
               <g key={idx} style={{ cursor: 'pointer' }} onClick={() => setActivePointIndex(idx)}>
                 <circle
@@ -188,16 +292,18 @@ export default function PriceHistoryModal({ itemId, onClose }) {
                   strokeWidth={isHovered ? 3 : 2}
                   style={{ transition: 'all 0.15s ease' }}
                 />
-                <text
-                  x={p.x}
-                  y={height - 10}
-                  fontSize="9.5"
-                  textAnchor="middle"
-                  fill={isHovered ? '#0f172a' : '#94a3b8'}
-                  fontWeight={isHovered ? 700 : 500}
-                >
-                  {formatDate(p.recorded_at).split(',')[0]}
-                </text>
+                {showLabel && (
+                  <text
+                    x={p.x}
+                    y={height - 10}
+                    fontSize="9.5"
+                    textAnchor="middle"
+                    fill={isHovered ? '#0f172a' : '#94a3b8'}
+                    fontWeight={isHovered ? 700 : 500}
+                  >
+                    {formatDate(p.recorded_at).split(',')[0]}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -271,100 +377,144 @@ export default function PriceHistoryModal({ itemId, onClose }) {
 
         {!isLoading && !error && data && (
           <div className="modal-body">
-            {/* Resumen Estadístico */}
+            {/* Resumen Estadístico Reactivo al Período */}
             <div className="modal-stats-grid">
               <div className="modal-stat-box">
-                <span className="stat-box-label">Precio Actual</span>
+                <span className="stat-box-label">
+                  {selectedFilter === 'all' ? 'Precio Actual' : 'Último Precio'}
+                </span>
                 <span className="stat-box-val highlight">
-                  {formatMoney(data.current_price)}
+                  {formatMoney(stats?.currentPrice)}
                 </span>
               </div>
               <div className="modal-stat-box">
-                <span className="stat-box-label">Mínimo Histórico</span>
+                <span className="stat-box-label">
+                  {selectedFilter === 'all' ? 'Mínimo Histórico' : 'Mínimo Período'}
+                </span>
                 <span className="stat-box-val" style={{ color: '#059669' }}>
-                  {formatMoney(data.min_recorded_price)}
+                  {formatMoney(stats?.minPrice)}
                 </span>
               </div>
               <div className="modal-stat-box">
-                <span className="stat-box-label">Máximo Observado</span>
+                <span className="stat-box-label">
+                  {selectedFilter === 'all' ? 'Máximo Observado' : 'Máximo Período'}
+                </span>
                 <span className="stat-box-val" style={{ color: '#64748b' }}>
-                  {formatMoney(data.max_recorded_price)}
+                  {formatMoney(stats?.maxPrice)}
                 </span>
               </div>
               <div className="modal-stat-box">
-                <span className="stat-box-label">Tendencia Temporal</span>
+                <span className="stat-box-label">
+                  Tendencia {selectedFilter === 'all' ? 'Global' : 'Período'}
+                </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                  {data.trend === 'downward' && <TrendingDown size={14} style={{ color: '#059669' }} />}
-                  {data.trend === 'upward' && <TrendingUp size={14} style={{ color: '#e11d48' }} />}
-                  {data.trend === 'stable' && <Minus size={14} style={{ color: '#64748b' }} />}
+                  {stats?.trend === 'downward' && <TrendingDown size={14} style={{ color: '#059669' }} />}
+                  {stats?.trend === 'upward' && <TrendingUp size={14} style={{ color: '#e11d48' }} />}
+                  {stats?.trend === 'stable' && <Minus size={14} style={{ color: '#64748b' }} />}
                   <span style={{
                     fontSize: '0.86rem',
                     fontWeight: 700,
-                    color: data.trend === 'downward' ? '#059669' : (data.trend === 'upward' ? '#e11d48' : '#64748b')
+                    color: stats?.trend === 'downward' ? '#059669' : (stats?.trend === 'upward' ? '#e11d48' : '#64748b')
                   }}>
-                    {data.price_change_percentage > 0 ? `+${data.price_change_percentage}%` : `${data.price_change_percentage}%`}
+                    {stats?.priceChangePct > 0 ? `+${stats?.priceChangePct}%` : `${stats?.priceChangePct}%`}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Gráfica de Serie Temporal */}
+            {/* Gráfica de Serie Temporal con Filtro de Período */}
             <div className="chart-section-wrapper">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1e293b' }}>
-                  Curva de Fluctuación de Precio (En cada sincronización)
-                </span>
-                <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
-                  {data.total_observations} ejecuciones registradas
-                </span>
+              <div className="chart-header-row">
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '0.86rem', fontWeight: 700, color: '#1e293b' }}>
+                      Curva de Fluctuación de Precio
+                    </span>
+                    <span className="chart-filter-tag">
+                      {TIME_FILTERS.find((f) => f.id === selectedFilter)?.label}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '0.74rem', color: '#64748b', display: 'block', marginTop: '2px' }}>
+                    {filteredHistory.length} de {data.total_observations} sincronizaciones observadas
+                  </span>
+                </div>
+
+                {/* Filtro de tiempo con botones pills */}
+                <div className="time-filter-pills" role="group" aria-label="Filtro de período de tiempo">
+                  {TIME_FILTERS.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      className={`time-filter-pill ${selectedFilter === f.id ? 'active' : ''}`}
+                      onClick={() => setSelectedFilter(f.id)}
+                      title={`Filtrar por ${f.label}`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {renderChart()}
             </div>
 
-            {/* Histórico tabular compacto */}
+            {/* Histórico tabular compacto filtrado */}
             <div style={{ marginTop: '20px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Registro Cronológico de Ejecuciones
-              </span>
-              <div className="history-table-wrapper">
-                <table className="history-table">
-                  <thead>
-                    <tr>
-                      <th>Sincronización</th>
-                      <th>Fecha y Hora</th>
-                      <th>Precio Cobrado</th>
-                      <th>Precio Original</th>
-                      <th>Rebaja</th>
-                      <th>Ranking</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.history.map((h, i) => (
-                      <tr 
-                        key={i} 
-                        className={activePointIndex === i ? 'active-row' : ''}
-                        onClick={() => setActivePointIndex(i)}
-                      >
-                        <td><strong>#{h.sync_id}</strong></td>
-                        <td>{formatDate(h.recorded_at)}</td>
-                        <td><strong style={{ color: '#0f172a' }}>{formatMoney(h.current_price)}</strong></td>
-                        <td>{h.original_price ? formatMoney(h.original_price) : '—'}</td>
-                        <td>
-                          {h.discount_percentage > 0 ? (
-                            <span style={{ color: '#059669', fontWeight: 600 }}>
-                              {Math.round(h.discount_percentage)}% OFF
-                            </span>
-                          ) : (
-                            <span style={{ color: '#94a3b8' }}>Sin oferta</span>
-                          )}
-                        </td>
-                        <td>{h.best_seller_rank ? `#${h.best_seller_rank}` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Registro Cronológico de Ejecuciones
+                </span>
+                <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                  {filteredHistory.length} registros en vista
+                </span>
               </div>
+
+              {filteredHistory.length > 0 ? (
+                <div className="history-table-wrapper">
+                  <table className="history-table">
+                    <thead>
+                      <tr>
+                        <th>Sincronización</th>
+                        <th>Fecha y Hora</th>
+                        <th>Precio Cobrado</th>
+                        <th>Precio Original</th>
+                        <th>Rebaja</th>
+                        <th>Ranking</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredHistory.map((h, i) => (
+                        <tr 
+                          key={i} 
+                          className={activePointIndex === i ? 'active-row' : ''}
+                          onClick={() => setActivePointIndex(i)}
+                        >
+                          <td><strong>#{h.sync_id}</strong></td>
+                          <td>{formatDate(h.recorded_at)}</td>
+                          <td><strong style={{ color: '#0f172a' }}>{formatMoney(h.current_price)}</strong></td>
+                          <td>{h.original_price ? formatMoney(h.original_price) : '—'}</td>
+                          <td>
+                            {h.discount_percentage > 0 ? (
+                              <span style={{ color: '#059669', fontWeight: 600 }}>
+                                {Math.round(h.discount_percentage)}% OFF
+                              </span>
+                            ) : (
+                              <span style={{ color: '#94a3b8' }}>Sin oferta</span>
+                            )}
+                          </td>
+                          <td>{h.best_seller_rank ? `#${h.best_seller_rank}` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="chart-empty-state" style={{ padding: '24px 16px' }}>
+                  <p className="empty-text" style={{ margin: 0 }}>
+                    No hay registros cronológicos dentro del rango de tiempo seleccionado.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Modal Footer */}

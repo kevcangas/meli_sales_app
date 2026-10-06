@@ -217,9 +217,13 @@ async def get_market_analytics(
 
 
 @app.get("/api/v1/products/{item_id}/history", response_model=ProductPriceHistoryResponse)
-async def get_price_history(item_id: str, db: Session = Depends(get_db)):
+async def get_price_history(
+    item_id: str,
+    days: Optional[int] = Query(None, description="Filtrar historial a los últimos N días", ge=1),
+    db: Session = Depends(get_db)
+):
     """Retorna la serie temporal de precios observados para un producto a lo largo de las sincronizaciones."""
-    history_data = get_product_price_history(db, item_id)
+    history_data = get_product_price_history(db, item_id, days=days)
     if not history_data:
         raise HTTPException(
             status_code=404,

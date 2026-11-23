@@ -12,24 +12,33 @@ import {
   Trophy,
   ArrowRight
 } from 'lucide-react';
-import { apiUrl } from '../api';
+import { apiUrl, parseApiResponse } from '../api';
 
-export default function AnalyticsView({ categories, currentCategory, onCategoryChange }) {
+export default function AnalyticsView({ categories, currentCategory, onCategoryChange, syncVersion = 0 }) {
   const [data, setData] = useState(null);
+  const [errorDetail, setErrorDetail] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     setIsLoading(true);
-    const catParam = currentCategory !== 'all' ? `?category_id=${currentCategory}` : '';
+    setErrorDetail(null);
+    const catParam = currentCategory !== 'all' ? `?category_id=${encodeURIComponent(currentCategory)}` : '';
     fetch(apiUrl(`/api/v1/analytics${catParam}`))
-      .then((res) => {
-        if (!res.ok) throw new Error('Error al consultar métricas');
-        return res.json();
+      .then(async (res) => {
+        const body = await parseApiResponse(res);
+        if (!res.ok) {
+          throw new Error(body?.detail || `Error HTTP ${res.status} al consultar métricas`);
+        }
+        return body;
       })
       .then((resData) => setData(resData))
-      .catch((err) => console.error('Error fetching analytics:', err))
+      .catch((err) => {
+        console.error('Error fetching analytics:', err);
+        setData(null);
+        setErrorDetail(err.message);
+      })
       .finally(() => setIsLoading(false));
-  }, [currentCategory]);
+  }, [currentCategory, syncVersion]);
 
   const formatMoney = (val) => {
     if (val === undefined || val === null) return '$0';
@@ -53,7 +62,7 @@ export default function AnalyticsView({ categories, currentCategory, onCategoryC
       <div className="empty-state">
         <Scale size={48} style={{ color: '#94a3b8', margin: '0 auto' }} />
         <h3>Sin datos estadísticos disponibles</h3>
-        <p>Ejecuta una sincronización para recopilar los precios de Mercado Libre.</p>
+        <p>{errorDetail || 'Ejecuta una sincronización para recopilar los precios de Mercado Libre.'}</p>
       </div>
     );
   }

@@ -50,6 +50,12 @@ class SyncTriggerResponse(BaseModel):
     summary: Optional[ComparisonSummary] = None
 
 
+class HtmlImportRequest(BaseModel):
+    best_sellers_html: str
+    deals_html: Optional[str] = None
+    category_id: Optional[str] = None
+
+
 class CategoryInfo(BaseModel):
     id: str
     name: str

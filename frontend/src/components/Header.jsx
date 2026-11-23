@@ -1,8 +1,9 @@
 import React from 'react';
-import { RefreshCw, Zap, Clock, ShoppingBag, LineChart } from 'lucide-react';
+import { RefreshCw, Upload, Zap, Clock, ShoppingBag, LineChart } from 'lucide-react';
 
 export default function Header({ 
   onSync, 
+  onOpenImport,
   isSyncing, 
   lastSyncAt, 
   executionTime, 
@@ -60,6 +61,28 @@ export default function Header({
           <span>Última sync: {formatTime(lastSyncAt)}</span>
           {executionTime > 0 && <span>({executionTime}s)</span>}
         </div>
+
+        <button
+          type="button"
+          onClick={onOpenImport}
+          disabled={isSyncing}
+          title="Importar una captura HTML guardada desde tu navegador"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '9px 14px',
+            borderRadius: '10px',
+            background: '#ffffff',
+            border: '1px solid #cbd5e1',
+            color: '#334155',
+            fontSize: '0.84rem',
+            fontWeight: 600,
+          }}
+        >
+          <Upload size={15} />
+          <span>Importar HTML</span>
+        </button>
 
         <button 
           className="sync-button" 

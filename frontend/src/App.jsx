@@ -5,7 +5,8 @@ import FilterControls from './components/FilterControls';
 import ProductGrid from './components/ProductGrid';
 import AnalyticsView from './components/AnalyticsView';
 import PriceHistoryModal from './components/PriceHistoryModal';
-import { apiUrl } from './api';
+import ImportSnapshotModal from './components/ImportSnapshotModal';
+import { apiUrl, parseApiResponse } from './api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('radar'); // 'radar' o 'analytics'
@@ -19,35 +20,46 @@ export default function App() {
   const [authenticityFilter, setAuthenticityFilter] = useState('all'); // 'all', 'real', 'illusory'
   const [sortBy, setSortBy] = useState('discount_desc');
   const [historyModalItemId, setHistoryModalItemId] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const [comparisonData, setComparisonData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState(null);
+  const [syncVersion, setSyncVersion] = useState(0);
+  const [statusBanner, setStatusBanner] = useState(null); // { type: 'info' | 'success' | 'error', text: string }
 
   // Cargar categorías disponibles
   useEffect(() => {
     fetch(apiUrl('/api/v1/categories'))
-      .then((res) => res.json())
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return parseApiResponse(res);
+      })
       .then((data) => {
         if (Array.isArray(data)) {
           setCategories(data);
         }
       })
       .catch((err) => console.error('Error cargando categorías:', err));
-  }, []);
+  }, [syncVersion]);
 
   // Cargar datos de comparación desde el backend
   const loadComparison = useCallback(async (category = selectedCategory) => {
     setIsLoading(true);
     try {
-      const catParam = category !== 'all' ? `?category_id=${category}` : '';
+      const catParam = category !== 'all' ? `?category_id=${encodeURIComponent(category)}` : '';
       const res = await fetch(apiUrl(`/api/v1/comparison${catParam}`));
-      if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
-      const data = await res.json();
+      const data = await parseApiResponse(res);
+      if (!res.ok) {
+        throw new Error(data?.detail || `Error HTTP ${res.status} al cargar comparación`);
+      }
       setComparisonData(data);
     } catch (err) {
       console.error('Error cargando datos de comparación:', err);
+      setStatusBanner({
+        type: 'error',
+        text: `No se pudieron cargar los datos (${err.message}). Verifica que el backend esté activo.`,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -60,24 +72,41 @@ export default function App() {
   // Disparar sincronización manual
   const handleSync = async () => {
     setIsSyncing(true);
-    setStatusMessage('Iniciando extracción en tiempo real...');
+    setStatusBanner({ type: 'info', text: 'Iniciando extracción en tiempo real...' });
+    let shouldAutoDismiss = true;
     try {
-      const catParam = selectedCategory !== 'all' ? `?category_id=${selectedCategory}` : '';
-      const res = await fetch(apiUrl(`/api/v1/sync${catParam}`), { method: 'POST' });
-      const result = await res.json();
+      const catParam = selectedCategory !== 'all' ? `?category_id=${encodeURIComponent(selectedCategory)}` : '';
+      const endpoint = `/api/v1/sync${catParam}`;
+      const res = await fetch(apiUrl(endpoint), { method: 'POST' });
+      const result = await parseApiResponse(res);
 
       if (res.ok) {
-        setStatusMessage('¡Datos actualizados con éxito!');
+        setStatusBanner({
+          type: 'success',
+          text: result?.message || '¡Datos actualizados con éxito!',
+        });
+        setSyncVersion((v) => v + 1);
         await loadComparison(selectedCategory);
       } else {
-        setStatusMessage(`Aviso: ${result.detail || 'Error en sincronización'}`);
+        shouldAutoDismiss = false;
+        const detail = result?.detail ? ` — ${result.detail}` : '';
+        setStatusBanner({
+          type: 'error',
+          text: `Error ${res.status} en ${endpoint}${detail}`,
+        });
       }
     } catch (err) {
+      shouldAutoDismiss = false;
       console.error('Error al sincronizar:', err);
-      setStatusMessage('Fallo al conectar con el servidor.');
+      setStatusBanner({
+        type: 'error',
+        text: `Fallo al conectar con el servidor (${err.message}).`,
+      });
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setStatusMessage(null), 4000);
+      if (shouldAutoDismiss) {
+        setTimeout(() => setStatusBanner(null), 4000);
+      }
     }
   };
 
@@ -139,6 +168,7 @@ export default function App() {
     <div className="app-layout">
       <Header
         onSync={handleSync}
+        onOpenImport={() => setShowImportModal(true)}
         isSyncing={isSyncing}
         lastSyncAt={comparisonData?.summary?.last_sync_at}
         executionTime={comparisonData?.summary?.execution_time_seconds}
@@ -146,24 +176,29 @@ export default function App() {
         onTabChange={setActiveTab}
       />
 
-      {statusMessage && (
-        <div style={{
-          padding: '12px 18px',
-          background: '#eff6ff',
-          border: '1px solid #bfdbfe',
-          borderRadius: '8px',
-          marginBottom: '20px',
-          color: '#1e40af',
-          fontSize: '0.88rem',
-          fontWeight: 500,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
-          <span>{statusMessage}</span>
-          <button 
-            onClick={() => setStatusMessage(null)}
-            style={{ background: 'transparent', color: '#64748b', fontSize: '1.2rem', lineHeight: 1 }}
+      {statusBanner && (
+        <div
+          role={statusBanner.type === 'error' ? 'alert' : 'status'}
+          style={{
+            padding: '12px 18px',
+            background: statusBanner.type === 'error' ? '#fef2f2' : (statusBanner.type === 'success' ? '#ecfdf5' : '#eff6ff'),
+            border: `1px solid ${statusBanner.type === 'error' ? '#fecaca' : (statusBanner.type === 'success' ? '#a7f3d0' : '#bfdbfe')}`,
+            borderRadius: '8px',
+            marginBottom: '20px',
+            color: statusBanner.type === 'error' ? '#b91c1c' : (statusBanner.type === 'success' ? '#047857' : '#1e40af'),
+            fontSize: '0.88rem',
+            fontWeight: 500,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '12px'
+          }}
+        >
+          <span>{statusBanner.text}</span>
+          <button
+            onClick={() => setStatusBanner(null)}
+            style={{ background: 'transparent', color: 'inherit', fontSize: '1.2rem', lineHeight: 1 }}
+            aria-label="Cerrar aviso"
           >
             &times;
           </button>
@@ -203,6 +238,7 @@ export default function App() {
           categories={categories}
           currentCategory={selectedCategory}
           onCategoryChange={setSelectedCategory}
+          syncVersion={syncVersion}
         />
       )}
 
@@ -211,6 +247,20 @@ export default function App() {
         <PriceHistoryModal
           itemId={historyModalItemId}
           onClose={() => setHistoryModalItemId(null)}
+        />
+      )}
+
+      {/* Modal de Importación de Captura HTML */}
+      {showImportModal && (
+        <ImportSnapshotModal
+          selectedCategory={selectedCategory}
+          onClose={() => setShowImportModal(false)}
+          onImportSuccess={async (msg) => {
+            setStatusBanner({ type: 'success', text: msg });
+            setSyncVersion((v) => v + 1);
+            await loadComparison(selectedCategory);
+            setTimeout(() => setStatusBanner(null), 5000);
+          }}
         />
       )}
     </div>

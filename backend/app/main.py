@@ -9,12 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import init_db, get_db
-from app.scrapers.meli_scraper import MercadoLibreScraper
+from app.scrapers.meli_scraper import MercadoLibreScraper, VerificationBlockedError
 from app.services.comparator import compare_best_sellers_and_deals
 from app.services.storage import save_sync_result, get_latest_comparison, get_sync_status, get_product_price_history
 from app.services.analytics import compute_category_analytics
 from app.models import ProductRecord
-from app.schemas import ComparisonResponse, SyncTriggerResponse, CategoryInfo, AnalyticsResponse, ProductPriceHistoryResponse
+from app.schemas import ComparisonResponse, SyncTriggerResponse, HtmlImportRequest, CategoryInfo, AnalyticsResponse, ProductPriceHistoryResponse
 
 # Configuración de logging
 logging.basicConfig(
@@ -131,6 +131,16 @@ async def trigger_sync(
 
             best_sellers, deals = await asyncio.gather(best_sellers_task, deals_task)
 
+            if not best_sellers and not deals:
+                elapsed = time.time() - start_time
+                err_msg = (
+                    "No se pudieron extraer Más Vendidos ni Ofertas desde Mercado Libre "
+                    "(posible bloqueo temporal o fallo de red). Se conservó la última sincronización válida."
+                )
+                logger.error("Sincronización vacía tras %.2fs: %s", elapsed, err_msg)
+                save_sync_result(db, {}, elapsed, status="error", error_message=err_msg)
+                raise HTTPException(status_code=502, detail=err_msg)
+
             # 2. Ejecutar algoritmo de cruce
             comparison = compare_best_sellers_and_deals(best_sellers, deals)
             elapsed = time.time() - start_time
@@ -151,11 +161,85 @@ async def trigger_sync(
                     "execution_time_seconds": sync_log.execution_time_seconds,
                 }
             )
+        except VerificationBlockedError as exc:
+            elapsed = time.time() - start_time
+            err_msg = f"{exc} Se conservó la última sincronización válida."
+            logger.warning("Sincronización bloqueada por verificación de tráfico: %s", exc)
+            save_sync_result(db, {}, elapsed, status="error", error_message=err_msg)
+            raise HTTPException(status_code=503, detail=err_msg)
+        except HTTPException:
+            raise
         except Exception as exc:
             elapsed = time.time() - start_time
             logger.error("Error durante sincronización: %s", exc, exc_info=True)
             save_sync_result(db, {}, elapsed, status="error", error_message=str(exc))
             raise HTTPException(status_code=500, detail=f"Error en sincronización: {str(exc)}")
+
+
+@app.post("/api/v1/import/html", response_model=SyncTriggerResponse)
+async def import_html_snapshot(
+    payload: HtmlImportRequest,
+    db: Session = Depends(get_db)
+):
+    """Importa una captura HTML guardada desde el navegador del usuario y la procesa en SQLite."""
+    if not payload.best_sellers_html or not payload.best_sellers_html.strip():
+        raise HTTPException(status_code=400, detail="Debes proporcionar el HTML de /mas-vendidos.")
+
+    if scraper.is_verification_html(payload.best_sellers_html):
+        raise HTTPException(
+            status_code=400,
+            detail="El HTML cargado corresponde a una pantalla de verificación de Mercado Libre, no al catálogo de productos."
+        )
+
+    if sync_lock.locked():
+        raise HTTPException(
+            status_code=429,
+            detail="Ya hay una sincronización en progreso. Por favor espera a que termine."
+        )
+
+    async with sync_lock:
+        start_time = time.time()
+        cat_param = payload.category_id if payload.category_id and payload.category_id != "all" else None
+        try:
+            best_sellers = scraper.parse_best_sellers_html(payload.best_sellers_html, category_id=cat_param)
+            deals = (
+                scraper.parse_deals_html(payload.deals_html)
+                if payload.deals_html and payload.deals_html.strip() and not scraper.is_verification_html(payload.deals_html)
+                else []
+            )
+
+            if not best_sellers:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No se detectaron tarjetas de productos en el HTML proporcionado. Asegúrate de guardar o copiar el HTML renderizado de /mas-vendidos."
+                )
+
+            comparison = compare_best_sellers_and_deals(best_sellers, deals)
+            elapsed = time.time() - start_time
+            sync_log = save_sync_result(db, comparison, elapsed, status="success")
+
+            return SyncTriggerResponse(
+                status="success",
+                message=(
+                    f"Captura importada con éxito ({comparison['total_best_sellers_monitored']} productos, "
+                    f"{comparison['best_sellers_with_deal_count']} con oferta) en {elapsed:.2f}s."
+                ),
+                sync_id=sync_log.id,
+                summary={
+                    "total_best_sellers_monitored": comparison["total_best_sellers_monitored"],
+                    "total_deals_monitored": comparison["total_deals_monitored"],
+                    "best_sellers_with_deal_count": comparison["best_sellers_with_deal_count"],
+                    "last_sync_at": sync_log.created_at,
+                    "last_sync_status": sync_log.status,
+                    "execution_time_seconds": sync_log.execution_time_seconds,
+                }
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            elapsed = time.time() - start_time
+            logger.error("Error importando captura HTML: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error procesando HTML importado: {str(exc)}")
 
 
 @app.get("/api/v1/comparison", response_model=ComparisonResponse)

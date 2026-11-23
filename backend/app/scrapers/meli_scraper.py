@@ -10,6 +10,10 @@ from app.schemas import ProductItem
 logger = logging.getLogger(__name__)
 
 
+class VerificationBlockedError(RuntimeError):
+    """Se lanza cuando Mercado Libre redirige a una página de verificación de tráfico."""
+
+
 class MercadoLibreScraper:
     def __init__(self, site_domain: str = "www.mercadolibre.com.mx"):
         self.base_url = f"https://{site_domain}"
@@ -25,6 +29,20 @@ class MercadoLibreScraper:
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
         }
+
+    def is_verification_html(self, html_content: str) -> bool:
+        body = (html_content or "")[:6000].lower()
+        return (
+            "suspicious-traffic-frontend" in body
+            or "/gz/account-verification" in body
+        )
+
+    def _is_verification_gate(self, response) -> bool:
+        final_url = str(getattr(response, "url", "") or "").lower()
+        return (
+            "/gz/account-verification" in final_url
+            or self.is_verification_html(getattr(response, "text", "") or "")
+        )
 
     def _extract_item_id(self, url: str) -> Optional[str]:
         if not url:
@@ -79,10 +97,17 @@ class MercadoLibreScraper:
             try:
                 async with AsyncSession(impersonate="chrome120") as session:
                     response = await session.get(url, headers=self.headers, timeout=25)
+                    if self._is_verification_gate(response):
+                        logger.warning("Verificación de tráfico detectada en %s (redirigido a %s)", url, response.url)
+                        raise VerificationBlockedError(
+                            "Mercado Libre solicitó verificación de tráfico para esta IP (/gz/account-verification)."
+                        )
                     if response.status_code == 200:
                         html_content = response.text
                         break
                     logger.warning("Intento %d/3: Status %s al consultar %s", attempt, response.status_code, url)
+            except VerificationBlockedError:
+                raise
             except Exception as exc:
                 logger.warning("Intento %d/3 falló al consultar %s: %s", attempt, url, exc)
 
@@ -91,6 +116,13 @@ class MercadoLibreScraper:
 
         if not html_content:
             logger.error("Agotados los reintentos para %s", url)
+            return []
+
+        return self.parse_best_sellers_html(html_content, category_id=category_id)
+
+    def parse_best_sellers_html(self, html_content: str, category_id: Optional[str] = None) -> List[ProductItem]:
+        """Parsea el HTML de /mas-vendidos (en vivo o importado desde el navegador)."""
+        if not html_content:
             return []
 
         parser = HTMLParser(html_content)
@@ -204,10 +236,17 @@ class MercadoLibreScraper:
                 try:
                     async with AsyncSession(impersonate="chrome120") as session:
                         response = await session.get(url, headers=self.headers, timeout=25)
+                        if self._is_verification_gate(response):
+                            logger.warning("Verificación de tráfico detectada en ofertas (%s -> %s)", url, response.url)
+                            raise VerificationBlockedError(
+                                "Mercado Libre solicitó verificación de tráfico para esta IP (/gz/account-verification)."
+                            )
                         if response.status_code == 200:
                             html_content = response.text
                             break
                         logger.warning("Intento %d/3: Status %s en página %d de ofertas", attempt, response.status_code, page)
+                except VerificationBlockedError:
+                    raise
                 except Exception as exc:
                     logger.warning("Intento %d/3 falló en ofertas página %d: %s", attempt, page, exc)
 
@@ -218,46 +257,56 @@ class MercadoLibreScraper:
                 logger.error("Agotados los reintentos para página %d de ofertas (%s)", page, url)
                 break
 
-            parser = HTMLParser(html_content)
-            cards = parser.css(".poly-card, .promotion-item, div[class*='poly-card']")
-
-            for card in cards:
-                title_node = card.css_first(".poly-component__title, .promotion-item__title, h2[class*='title'], a[class*='title']")
-                link_node = card.css_first("a[href]")
-
-                if not title_node or not link_node:
-                    continue
-
-                link = link_node.attributes.get("href", "")
-                if not link.startswith("http"):
-                    link = f"{self.base_url}{link}"
-
-                current_price = self._extract_price_and_cents(card, is_previous=False) or 0.0
-                original_price = self._extract_price_and_cents(card, is_previous=True)
-
-                discount_node = card.css_first(".andes-money-amount__discount, .promotion-item__discount, span[class*='discount']")
-                disc_pct = 0.0
-                if discount_node:
-                    disc_match = re.search(r"(\d+)%", discount_node.text())
-                    if disc_match:
-                        disc_pct = float(disc_match.group(1))
-                elif original_price and original_price > current_price and current_price > 0:
-                    disc_pct = round(((original_price - current_price) / original_price) * 100, 1)
-
-                deals.append(
-                    ProductItem(
-                        id=self._extract_item_id(link),
-                        title=title_node.text().strip(),
-                        permalink=link,
-                        current_price=current_price,
-                        original_price=original_price,
-                        discount_percentage=disc_pct,
-                        is_best_seller=False,
-                    )
-                )
+            deals.extend(self.parse_deals_html(html_content))
 
             if page < max_pages:
                 await asyncio.sleep(random.uniform(1.5, 3.0))
 
         logger.info("Total ofertas extraídas: %d", len(deals))
+        return deals
+
+    def parse_deals_html(self, html_content: str) -> List[ProductItem]:
+        """Parsea el HTML de /ofertas (en vivo o importado desde el navegador)."""
+        if not html_content:
+            return []
+
+        deals: List[ProductItem] = []
+        parser = HTMLParser(html_content)
+        cards = parser.css(".poly-card, .promotion-item, div[class*='poly-card']")
+
+        for card in cards:
+            title_node = card.css_first(".poly-component__title, .promotion-item__title, h2[class*='title'], a[class*='title']")
+            link_node = card.css_first("a[href]")
+
+            if not title_node or not link_node:
+                continue
+
+            link = link_node.attributes.get("href", "")
+            if not link.startswith("http"):
+                link = f"{self.base_url}{link}"
+
+            current_price = self._extract_price_and_cents(card, is_previous=False) or 0.0
+            original_price = self._extract_price_and_cents(card, is_previous=True)
+
+            discount_node = card.css_first(".andes-money-amount__discount, .promotion-item__discount, span[class*='discount']")
+            disc_pct = 0.0
+            if discount_node:
+                disc_match = re.search(r"(\d+)%", discount_node.text())
+                if disc_match:
+                    disc_pct = float(disc_match.group(1))
+            elif original_price and original_price > current_price and current_price > 0:
+                disc_pct = round(((original_price - current_price) / original_price) * 100, 1)
+
+            deals.append(
+                ProductItem(
+                    id=self._extract_item_id(link),
+                    title=title_node.text().strip(),
+                    permalink=link,
+                    current_price=current_price,
+                    original_price=original_price,
+                    discount_percentage=disc_pct,
+                    is_best_seller=False,
+                )
+            )
+
         return deals

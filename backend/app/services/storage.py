@@ -77,7 +77,7 @@ def get_latest_comparison(
     """Recupera la última sincronización exitosa y sus productos."""
     latest_sync = (
         db.query(SyncLog)
-        .filter(SyncLog.status == "success")
+        .filter(SyncLog.status == "success", SyncLog.total_best_sellers > 0)
         .order_by(desc(SyncLog.created_at))
         .first()
     )

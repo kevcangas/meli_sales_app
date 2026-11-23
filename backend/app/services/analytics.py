@@ -203,7 +203,7 @@ def compute_category_analytics(db: Session, category_id: Optional[str] = None) -
     """Calcula todas las métricas estadísticas y econométricas a partir de la última captura."""
     latest_sync = (
         db.query(SyncLog)
-        .filter(SyncLog.status == "success")
+        .filter(SyncLog.status == "success", SyncLog.total_best_sellers > 0)
         .order_by(desc(SyncLog.created_at))
         .first()
     )

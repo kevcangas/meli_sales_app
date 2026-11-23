@@ -4,8 +4,10 @@ services:
     port: 8000
     subdomain: api-meli-sales
     homepage: false
+    icon: mdi-api
+    description: "Meli Sales Backend API"
     container: meli_backend
-  - name: frontend
+  - name: Meli
     port: 80
     subdomain: meli-sales
     homepage: true
